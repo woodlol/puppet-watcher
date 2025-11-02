@@ -3,7 +3,7 @@ name: Puppet Afisha Watcher
 on:
     schedule:
         # попытка каждуЮ минуту
-        - cron: "*/1 * * * *"
+        - cron: "*/5 * * * *"
     # чтобы можно было руками запустить из GitHub
     workflow_dispatch:
 
