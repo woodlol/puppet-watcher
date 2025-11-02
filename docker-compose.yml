@@ -1,0 +1,20 @@
+services:
+    puppet-watcher:
+        build: .
+        container_name: puppet-watcher
+        restart: unless-stopped
+        environment:
+            # твой бот
+            TELEGRAM_BOT_TOKEN: "8526794089:AAGJBoI-UOwU6ghI6WhpXy-yqQZCVkX9-nU"
+            # твой чат (id, не username)
+            TELEGRAM_CHAT_ID: "276848772"
+
+            # раз в 5 минут
+            CHECK_EVERY_SECONDS: "60"
+
+            # куда складывать seen.json
+            SEEN_FILE: "/data/seen.json"
+        volumes:
+            # чтобы seen.json жил между перезапусками
+            - ./data:/data
+        tty: true
