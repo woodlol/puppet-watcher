@@ -1,0 +1,42 @@
+name: Puppet Afisha Watcher
+
+on:
+    schedule:
+        # попытка каждуЮ минуту
+        - cron: "*/1 * * * *"
+    # чтобы можно было руками запустить из GitHub
+    workflow_dispatch:
+
+permissions:
+    contents: write  # нужно, чтобы скрипт мог сделать git push
+
+jobs:
+    run-watcher:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  # чтобы git push работал
+                  persist-credentials: true
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.11"
+
+            - name: Install dependencies
+              run: |
+                  pip install requests beautifulsoup4
+
+            - name: Run watcher
+              env:
+                  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+                  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+              run: |
+                  python puppet_watcher.py
+
+            - name: Show git status (debug)
+              run: |
+                  git status

@@ -1,36 +1,27 @@
 import os
 import re
 import json
-import time
+import subprocess
 from datetime import datetime
 from typing import List, Dict, Set, Optional
 
 import requests
 from bs4 import BeautifulSoup
 
-# ================================
-# НАСТРОЙКИ
-# ================================
 AFISHA_URL = "https://puppet-minsk.com/bilety/afisha"
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
-CHECK_EVERY_SECONDS = int(os.environ.get("CHECK_EVERY_SECONDS", "300"))
-SEEN_FILE = os.environ.get("SEEN_FILE", "/data/seen.json")
+# для GitHub Actions кладём сюда
+SEEN_FILE = os.environ.get("SEEN_FILE", "data/seen.json")
 
 
-# ================================
-# ЛОГ
-# ================================
 def log(msg: str):
     now = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
     print(f"{now} {msg}", flush=True)
 
 
-# ================================
-# SEEN
-# ================================
 def load_seen() -> Set[str]:
     if not os.path.exists(SEEN_FILE):
         return set()
@@ -47,9 +38,6 @@ def save_seen(seen: Set[str]):
         json.dump(list(seen), f, ensure_ascii=False, indent=2)
 
 
-# ================================
-# TELEGRAM
-# ================================
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -66,9 +54,6 @@ def send_telegram(text: str):
         log(f"❗ Telegram error: {e}")
 
 
-# ================================
-# FETCH
-# ================================
 def fetch_afisha_html() -> Optional[str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:129.0) Gecko/20100101 Firefox/129.0",
@@ -83,20 +68,7 @@ def fetch_afisha_html() -> Optional[str]:
         return None
 
 
-# ================================
-# PARSE
-# ================================
 def parse_afisha(html: str) -> List[Dict]:
-    """
-    Возвращает список спектаклей:
-    {
-      "id": "...",
-      "date": "02.11.2025",
-      "time": "19:00",
-      "title": "Записки юного врача",
-      "url": "https://tce.by/..."
-    }
-    """
     soup = BeautifulSoup(html, "html.parser")
     results: List[Dict] = []
 
@@ -112,7 +84,6 @@ def parse_afisha(html: str) -> List[Dict]:
         title = a.get_text(strip=True)
         url = a["href"]
 
-        # первая ячейка: "11.11.2025 19:00"
         first_text = tds[0].get_text(" ", strip=True).replace("\xa0", " ").replace("\u2003", " ")
         m = re.match(r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})", first_text)
         if not m:
@@ -134,10 +105,39 @@ def parse_afisha(html: str) -> List[Dict]:
     return results
 
 
-# ================================
-# ПРОВЕРКА НОВЫХ
-# ================================
-def check_once():
+def git_has_changes() -> bool:
+    """
+    Проверяем, есть ли изменения в рабочей директории
+    """
+    try:
+        out = subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
+        return bool(out)
+    except Exception as e:
+        log(f"⚠️ Не удалось проверить git status: {e}")
+        return False
+
+
+def git_commit_and_push(commit_msg: str):
+    """
+    Коммитим и пушим изменения (в первую очередь data/seen.json)
+    """
+    try:
+        # настроим имя/почту для actions
+        subprocess.run(["git", "config", "user.name", "github-actions"], check=True)
+        subprocess.run(["git", "config", "user.email", "actions@github.com"], check=True)
+
+        subprocess.run(["git", "add", SEEN_FILE], check=True)
+        # Commit может быть пустым, поэтому allow-empty
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+        subprocess.run(["git", "push"], check=True)
+        log("✅ Изменения закоммичены и отправлены в репозиторий")
+    except subprocess.CalledProcessError as e:
+        log(f"❗ Не удалось закоммитить/запушить: {e}")
+    except Exception as e:
+        log(f"❗ git push error: {e}")
+
+
+def main():
     log("🔎 Проверяю афишу…")
     html = fetch_afisha_html()
     if html is None:
@@ -145,10 +145,10 @@ def check_once():
 
     items = parse_afisha(html)
     if not items:
-        log("😴 В афише ничего не найдено (или сайт поменял разметку).")
+        log("😴 В афише ничего не найдено (или разметка поменялась).")
         return
 
-    log(f"🎭 Найдено {len(items)} записей в афише.")
+    log(f"🎭 Найдено записей: {len(items)}")
 
     seen = load_seen()
     new_items = [x for x in items if x["id"] not in seen]
@@ -168,17 +168,15 @@ def check_once():
         seen.add(x["id"])
         log(f"✨ Отправлено в Telegram: {x['title']} ({x['date']} {x['time']})")
 
+    # сохраняем
     save_seen(seen)
 
-
-# ================================
-# ЦИКЛ
-# ================================
-def main_loop():
-    while True:
-        check_once()
-        time.sleep(CHECK_EVERY_SECONDS)
+    # если есть изменения — коммитим
+    if git_has_changes():
+        git_commit_and_push("update seen.json from GitHub Actions")
+    else:
+        log("ℹ️ Изменений для коммита нет.")
 
 
 if __name__ == "__main__":
-    main_loop()
+    main()
