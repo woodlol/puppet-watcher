@@ -15,6 +15,7 @@ AFISHA_URL = os.environ.get("AFISHA_URL", "https://puppet-minsk.by/afisha")
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 SEEN_FILE = os.environ.get("SEEN_FILE", "data/seen.json")
+DEBUG_PARSE = "1"
 
 def log(msg: str):
     now = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
@@ -117,21 +118,22 @@ def _extract_day_and_month_from_text(text: str) -> Optional[Tuple[str, Optional[
     return (day, month_word) if day else None
 
 def parse_afisha(html: str) -> List[Dict]:
-    """
-    Новая разметка (карточки):
-    .afisha_listcontainer.item_mounth-YYYY-MM > .afisha_item
-      └─ .afisha-info
-          ├─ p.afisha-day     → '15 Ноября, Сб'
-          ├─ p.afisha-time    → '11:00'
-          └─ p.afisha-title   → 'Название'
-      └─ a.afisha_item-hover → относительная ссылка (…#tickets)
-    """
     soup = BeautifulSoup(html, "html.parser")
 
     results: List[Dict] = []
-    for item in soup.select(".afisha_listcontainer .afisha_item"):
+    items = soup.select(".afisha_listcontainer .afisha_item")
+
+    if DEBUG_PARSE:
+        log(f"🧩 DEBUG: найдено карточек .afisha_item: {len(items)}")
+
+    for idx, item in enumerate(items, start=1):
+        if DEBUG_PARSE:
+            log(f"\n🟦 DEBUG: анализ карточки #{idx}")
+
         info = item.select_one(".afisha-info")
         if not info:
+            if DEBUG_PARSE:
+                log("  ⚠️ Нет .afisha-info → пропуск")
             continue
 
         p_day = info.select_one(".afisha-day")
@@ -139,47 +141,79 @@ def parse_afisha(html: str) -> List[Dict]:
         p_title = info.select_one(".afisha-title")
         a_link = item.select_one("a.afisha_item-hover[href]")
 
+        if DEBUG_PARSE:
+            log(f"  — day:   {p_day.get_text(strip=True) if p_day else 'нет'}")
+            log(f"  — time:  {p_time.get_text(strip=True) if p_time else 'нет'}")
+            log(f"  — title: {p_title.get_text(strip=True) if p_title else 'нет'}")
+            log(f"  — link:  {a_link.get('href') if a_link else 'нет'}")
+
         if not (p_day and p_time and p_title and a_link):
+            if DEBUG_PARSE:
+                log("  ❌ Не хватает нужных элементов → пропуск")
             continue
 
+        # ----- разбор текста -----
         day_text = p_day.get_text(" ", strip=True)
         time_text = _norm_space(p_time.get_text(" ", strip=True))
         title = _norm_space(p_title.get_text(" ", strip=True))
         href = a_link.get("href", "").strip()
 
-        # год-месяц пытаемся взять из контейнера item_mounth-YYYY-MM
+        # ----- ищем YYYY-MM в контейнере -----
         ym = _extract_year_month_from_container(item)
-        year, month_num = (None, None)
-        if ym:
-            year, month_num = ym
+        if DEBUG_PARSE:
+            log(f"  🔍 Контейнер item_mounth-YYYY-MM: {ym}")
 
-        # день и (возможно) слово месяца из текста "15 Ноября, Сб"
+        year, month_num = ym if ym else (None, None)
+
+        # ----- разбираем строку “15 Ноября, Сб” -----
         day_month = _extract_day_and_month_from_text(day_text)
+        if DEBUG_PARSE:
+            log(f"  🔍 День/месяц из текста: {day_month}")
+
         if not day_month:
+            if DEBUG_PARSE:
+                log("  ❌ Не удалось извлечь день/месяц → пропуск")
             continue
+
         day_num, month_word = day_month
 
-        # если month_num не нашли в контейнере — пытаемся из названия месяца
+        # ----- если month_num нет — пробуем словарь -----
         if not month_num and month_word:
-            month_num = MONTHS_RU.get(month_word.lower())
+            mn = MONTHS_RU.get(month_word.lower())
+            if mn:
+                month_num = mn
+                if DEBUG_PARSE:
+                    log(f"  🔧 Месяц по слову '{month_word}': {month_num}")
 
-        # если год не нашли — берём текущий (на всякий)
+        # ----- если год не найден — ставим текущий -----
         if not year:
             year = str(datetime.now().year)
+            if DEBUG_PARSE:
+                log(f"  🔧 Год не найден → поставлен текущий {year}")
 
-        # нормализуем день до 2 цифр
+        # ----- нормализуем день -----
         if day_num and len(day_num) == 1:
             day_num = "0" + day_num
 
-        # финальная дата
-        if not (year and month_num and day_num and time_text):
+        if not (year and month_num and day_num):
+            if DEBUG_PARSE:
+                log("  ❌ Не собрался полный формат даты → пропуск")
             continue
+
         date_str = f"{day_num}.{month_num}.{year}"
+
+        if DEBUG_PARSE:
+            log(f"  📅 Итоговая дата: {date_str}")
+            log(f"  ⏰ Время:        {time_text}")
 
         # абсолютная ссылка
         url_abs = urljoin(AFISHA_URL if AFISHA_URL.endswith("/") else AFISHA_URL + "/", href)
 
+        if DEBUG_PARSE:
+            log(f"  🔗 Финальная ссылка: {url_abs}")
+
         item_id = f"{date_str} {time_text} | {title} | {url_abs}"
+
         results.append(
             {
                 "id": item_id,
@@ -189,5 +223,11 @@ def parse_afisha(html: str) -> List[Dict]:
                 "url": url_abs,
             }
         )
+
+        if DEBUG_PARSE:
+            log(f"  ✅ Добавлена карточка → ID: {item_id}")
+
+    if DEBUG_PARSE:
+        log(f"\n🟢 DEBUG: итоговое количество разобранных событий: {len(results)}")
 
     return results
